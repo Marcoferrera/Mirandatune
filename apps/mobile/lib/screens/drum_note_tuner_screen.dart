@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'dart:io'; // ✅ Para gravar arquivos
+import 'dart:typed_data'; // ✅ Para montar o WAV
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:record/record.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:path_provider/path_provider.dart'; // ✅ Para achar a pasta
 import 'package:dsp/dsp.dart'; 
 import '../services/log_service.dart';
 import '../services/native_dsp.dart'; 
@@ -72,6 +75,7 @@ class _DrumNoteTunerScreenState extends State<DrumNoteTunerScreen> {
   String _status = 'Aguardando batida...';
   Color _statusColor = Colors.grey;
   DateTime _lastHitTime = DateTime.now();
+  int _wavCounter = 0;
 
   @override
   void initState() {
@@ -90,14 +94,64 @@ class _DrumNoteTunerScreenState extends State<DrumNoteTunerScreen> {
     _startListening();
   }
 
+  // ✅ FUNÇÃO PARA GRAVAR WAV (Apenas em Debug)
+  Future<void> _saveWav(List<double> buffer) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final wavDir = Directory('${dir.path}/mirandatune_debug');
+      if (!await wavDir.exists()) await wavDir.create();
+      
+      _wavCounter++;
+      final file = File('${wavDir.path}/hit_${_wavCounter.toString().padLeft(3, '0')}.wav');
+      
+      const int sampleRate = 22050;
+      final int numSamples = buffer.length;
+      final int dataSize = numSamples * 2; // 16-bit
+      
+      final header = ByteData(44);
+      // RIFF
+      header.setUint8(0, 0x52); header.setUint8(1, 0x49); header.setUint8(2, 0x46); header.setUint8(3, 0x46);
+      header.setUint32(4, 36 + dataSize, Endian.little);
+      // WAVE
+      header.setUint8(8, 0x57); header.setUint8(9, 0x41); header.setUint8(10, 0x56); header.setUint8(11, 0x45);
+      // fmt 
+      header.setUint8(12, 0x66); header.setUint8(13, 0x6D); header.setUint8(14, 0x74); header.setUint8(15, 0x20);
+      header.setUint32(16, 16, Endian.little); // Subchunk1Size
+      header.setUint16(20, 1, Endian.little); // AudioFormat (PCM)
+      header.setUint16(22, 1, Endian.little); // NumChannels
+      header.setUint32(24, sampleRate, Endian.little); // SampleRate
+      header.setUint32(28, sampleRate * 2, Endian.little); // ByteRate
+      header.setUint16(32, 2, Endian.little); // BlockAlign
+      header.setUint16(34, 16, Endian.little); // BitsPerSample
+      // data
+      header.setUint8(36, 0x64); header.setUint8(37, 0x61); header.setUint8(38, 0x74); header.setUint8(39, 0x61);
+      header.setUint32(40, dataSize, Endian.little);
+      
+      final pcmData = ByteData(dataSize);
+      for (int i = 0; i < numSamples; i++) {
+        final val = (buffer[i] * 32767).clamp(-32768, 32767).toInt();
+        pcmData.setInt16(i * 2, val, Endian.little);
+      }
+      
+      final bytes = Uint8List(44 + dataSize);
+      bytes.setRange(0, 44, header.buffer.asUint8List());
+      bytes.setRange(44, 44 + dataSize, pcmData.buffer.asUint8List());
+      
+      await file.writeAsBytes(bytes);
+      debugPrint('MIRANDA_WAV,${file.path}');
+    } catch (e) {
+      debugPrint('MIRANDA_WAV_ERR,$e');
+    }
+  }
+
   Future<void> _startListening() async {
     if (!await _recorder.hasPermission()) return;
     setState(() { _isListening = true; _status = 'Aguardando batida...'; _statusColor = Colors.grey; _audioAccumulator.clear(); _isProcessing = false; });
 
-    const recordConfig = RecordConfig(
+    final recordConfig = RecordConfig(
       encoder: AudioEncoder.pcm16bits, sampleRate: 22050, numChannels: 1,
       echoCancel: false, noiseSuppress: false,
-      androidConfig: AndroidRecordConfig(inputSource: AndroidInputSource.unprocessed),
+      androidConfig: const AndroidRecordConfig(audioSource: AndroidAudioSource.unprocessed),
     );
 
     final stream = await _recorder.startStream(recordConfig);
@@ -108,15 +162,26 @@ class _DrumNoteTunerScreenState extends State<DrumNoteTunerScreen> {
         if (sampleInt >= 32768) sampleInt -= 65536;
         _audioAccumulator.add(sampleInt / 32768.0);
       }
-      int targetSamples = _selectedDrum == 'Bumbo' ? 8192 : 4096;
+      
+      // Buffer maior para ter certeza de que a janela de 2048 amostras cabe após o onset
+      int targetSamples = _selectedDrum == 'Bumbo' ? 8192 : 6144;
+
       if (_audioAccumulator.length >= targetSamples) {
         double sumSquares = 0;
         for (double v in _audioAccumulator) sumSquares += v * v;
         final rms = sqrt(sumSquares / _audioAccumulator.length);
+        
+        // Gatilho
         if (rms > 0.02 && DateTime.now().difference(_lastHitTime).inMilliseconds > 600) {
           _lastHitTime = DateTime.now();
           final bufferToProcess = List<double>.from(_audioAccumulator);
           _audioAccumulator.clear(); 
+          
+          // ✅ GRAVA WAV ANTES DE PROCESSAR (Apenas em Debug)
+          if (kDebugMode) {
+            _saveWav(bufferToProcess);
+          }
+          
           _processHit(bufferToProcess);
         } else if (rms < 0.01) { _audioAccumulator.clear(); } 
         else { _audioAccumulator.removeRange(0, targetSamples ~/ 2); }
@@ -138,24 +203,6 @@ class _DrumNoteTunerScreenState extends State<DrumNoteTunerScreen> {
       double targetHz = _customTargetHz ?? drumReferenceFreqs[_selectedDrum]!;
       final dsp = NativeDsp();
 
-      // ✅ CHAMADA DE DEBUG (só em debug, roda a matemática duas vezes)
-      if (kDebugMode) {
-        final debugData = dsp.processarAudioDebug(buffer, 22050, drumTypeInt, targetHz);
-        debugPrint(
-          'MIRANDA,'
-          'tambor=$_selectedDrum,'
-          'alvo=${targetHz.toStringAsFixed(1)},'
-          'f0filtro=${debugData[0].toStringAsFixed(2)},'
-          'f0semfiltro=${debugData[1].toStringAsFixed(2)},'
-          'rms=${debugData[2].toStringAsFixed(4)},'
-          'onset=${debugData[3].toInt()},'
-          'start=${debugData[4].toInt()},'
-          'razaoPico=${debugData[5].toStringAsFixed(2)},'
-          'segundoPico=${debugData[6].toStringAsFixed(2)}'
-        );
-      }
-
-      // Chamada normal (produção)
       double f0 = dsp.processarAudio(buffer, 22050, drumTypeInt, targetHz);
       if (!mounted) return;
       if (f0 <= 0) { setState(() { _status = 'Aguardando batida...'; _statusColor = Colors.grey; }); return; }
