@@ -1,6 +1,5 @@
 import 'dart:math';
 import 'fft.dart';
-import 'pitch_detector.dart';
 
 class DrumPitchResult {
   final double f0;          
@@ -19,38 +18,6 @@ class DrumPitchResult {
 }
 
 class DrumPitchDetector {
-  static int _janelaParaTambor(String drum) {
-    if (drum == 'Bumbo' || drum == 'Surdo') return 8192;
-    return 4096;
-  }
-
-  static Map<String, double> _faixaParaTambor(String drum) {
-    const faixas = {
-      'Bumbo': [40.0, 110.0],
-      'Caixa': [140.0, 260.0],
-      'Tom 1': [110.0, 220.0],
-      'Tom 2': [90.0, 180.0],
-      'Surdo': [55.0, 145.0],
-    };
-    final f = faixas[drum] ?? [40.0, 400.0];
-    return {'min': f[0], 'max': f[1]};
-  }
-
-  static List<double> _aplicarFiltroPassaBaixa(List<double> audio, double sampleRate, double cutoff) {
-    final rc = 1.0 / (2 * pi * cutoff);
-    final dt = 1.0 / sampleRate;
-    final alpha = dt / (rc + dt);
-    
-    List<double> filtrado = List.filled(audio.length, 0.0);
-    if (audio.isEmpty) return filtrado;
-    
-    filtrado[0] = audio[0] * alpha;
-    for (int i = 1; i < audio.length; i++) {
-      filtrado[i] = filtrado[i - 1] + alpha * (audio[i] - filtrado[i - 1]);
-    }
-    return filtrado;
-  }
-
   static int _encontrarPico(List<double> magnitudes, int binInicio, int binFim) {
     int pico = binInicio;
     double maxMag = 0.0;
@@ -67,10 +34,22 @@ class DrumPitchDetector {
     List<double> audioBuffer,
     int sampleRate, {
     required String drumType,
+    double? customTargetHz,
   }) {
+    // Garante que o tamanho seja potência de 2
+    int windowSize = 1;
+    while (windowSize * 2 <= audioBuffer.length) {
+      windowSize *= 2;
+    }
+    
+    if (windowSize < 2048) {
+      return DrumPitchResult(f0: 0.0, isSilent: true);
+    }
+
+    // === ETAPA 1: Detecção de Onset (Encontrar a batida) ===
     int onsetIndex = 0;
     double maxRms = 0.0;
-    for (int i = 0; i <= audioBuffer.length - 512; i += 256) {
+    for (int i = 0; i <= windowSize - 512; i += 256) {
       double sumSquares = 0;
       for (int j = 0; j < 512; j++) {
         sumSquares += audioBuffer[i + j] * audioBuffer[i + j];
@@ -82,26 +61,32 @@ class DrumPitchDetector {
       }
     }
 
-    if (maxRms < 0.01) {
+    if (maxRms < 0.005) {
       return DrumPitchResult(f0: 0.0, isSilent: true);
     }
 
-    final windowSize = _janelaParaTambor(drumType);
-    int startIndex = onsetIndex + 1000;
-    if (startIndex + windowSize > audioBuffer.length) {
-      startIndex = max(0, audioBuffer.length - windowSize);
+    // === ETAPA 2: Fatiar exatamente a partir do Onset ===
+    // Pega um pedaço do ataque, ignorando o silêncio antes ou o eco depois
+    int sliceSize = 2048; // Tamanho ideal para análise de tambor
+    int startIndex = onsetIndex;
+    
+    // Se o ataque foi muito no final do buffer, ajusta para pegar o final
+    if (startIndex + sliceSize > audioBuffer.length) {
+      startIndex = max(0, audioBuffer.length - sliceSize);
     }
 
-    List<double> buffer = audioBuffer.sublist(startIndex, startIndex + windowSize);
-    if (drumType == 'Caixa') {
-      buffer = _aplicarFiltroPassaBaixa(buffer, sampleRate.toDouble(), 350.0);
-    }
+    List<double> slicedBuffer = audioBuffer.sublist(startIndex, startIndex + sliceSize);
+    
+    // Ajusta windowSize para o tamanho fatiado
+    windowSize = 2048;
 
+    // === ETAPA 3: Aplicar Janela de Hann ===
     List<Complex> complexBuffer = List.generate(windowSize, (i) {
       double hann = 0.5 * (1 - cos(2 * pi * i / (windowSize - 1)));
-      return Complex(buffer[i] * hann, 0);
+      return Complex(slicedBuffer[i] * hann, 0);
     });
 
+    // === ETAPA 4: FFT ===
     List<Complex> frequencyDomain = FFT.transform(complexBuffer);
     List<double> magnitudes = frequencyDomain
         .take(windowSize ~/ 2)
@@ -109,37 +94,52 @@ class DrumPitchDetector {
         .toList();
 
     final binWidth = sampleRate / windowSize;
-    final faixa = _faixaParaTambor(drumType);
-    final minBin = (faixa['min']! / binWidth).ceil();
-    final maxBin = (faixa['max']! / binWidth).floor();
 
-    int f0Bin = _encontrarPico(magnitudes, max(1, minBin), maxBin);
-    double f0 = f0Bin * binWidth;
-    if (f0Bin > 0 && f0Bin < magnitudes.length - 1) {
-      f0 = SpectralInterpolation.refine(magnitudes, f0Bin, binWidth);
+    // === ETAPA 5: TARGET FILTER ===
+    double minFreq;
+    double maxFreq;
+
+    if (customTargetHz != null && customTargetHz > 0) {
+      minFreq = customTargetHz * 0.85;
+      maxFreq = customTargetHz * 1.15;
+    } else {
+      final faixas = {
+        'Bumbo': [40.0, 110.0],
+        'Caixa': [140.0, 260.0],
+        'Tom 1': [110.0, 220.0],
+        'Tom 2': [90.0, 180.0],
+        'Surdo': [55.0, 145.0],
+      };
+      final f = faixas[drumType] ?? [40.0, 400.0];
+      minFreq = f[0];
+      maxFreq = f[1];
     }
 
-    final f1MinBin = (1.2 * f0 / binWidth).ceil();
-    final f1MaxBin = (2.5 * f0 / binWidth).floor();
-    double? f1;
-    double? rtf;
+    final minBin = (minFreq / binWidth).ceil();
+    final maxBin = (maxFreq / binWidth).floor();
 
-    if (f1MinBin < magnitudes.length && f1MaxBin > f1MinBin) {
-      int f1Bin = _encontrarPico(magnitudes, f1MinBin, min(f1MaxBin, magnitudes.length - 1));
-      
-      if (magnitudes[f1Bin] > 0.3 * magnitudes[f0Bin]) {
-        f1 = f1Bin * binWidth;
-        if (f1Bin > 0 && f1Bin < magnitudes.length - 1) {
-          f1 = SpectralInterpolation.refine(magnitudes, f1Bin, binWidth);
-        }
-        rtf = f1 / f0;
+    // === ETAPA 6: Identificar F0 ===
+    int f0Bin = _encontrarPico(magnitudes, max(1, minBin), maxBin);
+    double f0 = f0Bin * binWidth;
+    
+    // Refinamento sub-bin
+    if (f0Bin > 0 && f0Bin < magnitudes.length - 1) {
+      double s0 = magnitudes[f0Bin - 1];
+      double s1 = magnitudes[f0Bin];
+      double s2 = magnitudes[f0Bin + 1];
+      double denominator = 2 * (2 * s1 - s2 - s0);
+      if (denominator != 0) {
+        f0 = (f0Bin + (s2 - s0) / denominator) * binWidth;
       }
+    }
+
+    // Ignora leituras absurdamente baixas (ruído)
+    if (f0 < minFreq || f0 > maxFreq) {
+       return DrumPitchResult(f0: 0.0, isSilent: true);
     }
 
     return DrumPitchResult(
       f0: f0,
-      f1: f1,
-      rtf: rtf,
       confidence: maxRms,
     );
   }
