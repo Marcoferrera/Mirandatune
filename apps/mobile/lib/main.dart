@@ -1,10 +1,4 @@
 // lib/main.dart
-//
-// Mirandatune — entrypoint.
-// Onboarding gerenciado por estado (não por Navigator em initState).
-// A flag 'onboarding_completed' em SharedPreferences controla a primeira home.
-// Combo de tecla de atalho em debug: veja nota no fim do arquivo.
-
 import 'dart:ui';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
@@ -55,10 +49,6 @@ class MyApp extends StatelessWidget {
   }
 }
 
-// -----------------------------------------------------------------------------
-// AppRoot — carrega a flag de onboarding e decide a home.
-// Usa setState em vez de Navigator.pushReplacement.
-// -----------------------------------------------------------------------------
 class AppRoot extends StatefulWidget {
   const AppRoot({super.key});
 
@@ -67,7 +57,6 @@ class AppRoot extends StatefulWidget {
 }
 
 class _AppRootState extends State<AppRoot> {
-  /// null = ainda carregando; true = já completou; false = mostrar onboarding.
   bool? _onboardingCompleted;
 
   @override
@@ -79,33 +68,24 @@ class _AppRootState extends State<AppRoot> {
   Future<void> _loadOnboardingState() async {
     try {
       final SharedPreferences prefs = await SharedPreferences.getInstance();
-
-      // Opcional para desenvolvimento: descomente a linha abaixo para forçar
-      // o onboarding a aparecer SEMPRE que você rodar em debug.
-      // if (kDebugMode) await prefs.remove(OnboardingScreen.prefKey);
-
       final bool completed =
           prefs.getBool(OnboardingScreen.prefKey) ?? false;
 
       if (!mounted) return;
       setState(() => _onboardingCompleted = completed);
     } catch (e) {
-      // Em caso de falha na leitura, assume onboarding não visto.
       if (!mounted) return;
       setState(() => _onboardingCompleted = false);
     }
   }
 
   Future<void> _handleOnboardingComplete() async {
-    // A tela de onboarding já persiste a flag antes de chamar este callback,
-    // então apenas atualizamos o estado local para trocar a árvore.
     if (!mounted) return;
     setState(() => _onboardingCompleted = true);
   }
 
   @override
   Widget build(BuildContext context) {
-    // Enquanto carrega a flag, mostra splash neutro.
     if (_onboardingCompleted == null) {
       return const Scaffold(
         backgroundColor: Color(0xFF121212),
@@ -121,9 +101,6 @@ class _AppRootState extends State<AppRoot> {
   }
 }
 
-// -----------------------------------------------------------------------------
-// HomeScreen — menu principal (inalterado em relação ao original).
-// -----------------------------------------------------------------------------
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 

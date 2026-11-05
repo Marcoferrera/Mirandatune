@@ -36,6 +36,17 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+    // =========================================================================
+    // ✅ ADICIONADO: Configuração do C++ / CMake para o Motor DSP Nativo
+    // =========================================================================
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1" // Versão padrão do CMake no Android SDK
+        }
+    }
+    // =========================================================================
 }
 
 kotlin {
