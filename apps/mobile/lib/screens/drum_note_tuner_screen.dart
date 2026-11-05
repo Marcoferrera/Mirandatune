@@ -8,9 +8,6 @@ import '../services/log_service.dart';
 import '../services/native_dsp.dart'; 
 import '../widgets/latency_calibration_dialog.dart';
 
-// ============================================================================
-// REFERÊNCIA DOS ÁUDIOS (Coloque aqui o Hz exato dos seus arquivos .ogg)
-// ============================================================================
 const Map<String, double> drumReferenceFreqs = {
   'Bumbo': 65.0,   
   'Caixa': 190.0,  
@@ -151,6 +148,63 @@ class _DrumNoteTunerScreenState extends State<DrumNoteTunerScreen> {
     _startListening();
   }
 
+  // ===========================================================================
+  // ✅ SUÍTE DE TESTES INTERNOS (GERADOR DE ONDAS SINTÉTICAS)
+  // ===========================================================================
+  void _runInternalTests() {
+    final dsp = NativeDsp();
+    final int sampleRate = 22050;
+    final int length = 4096;
+    List<String> report = [];
+
+    // Teste 1: Caixa (190 Hz com ruído)
+    List<double> caixaBuffer = List.generate(length, (i) {
+      double t = i / sampleRate;
+      return 0.5 * sin(2 * pi * 190 * t) + 
+             0.2 * sin(2 * pi * 100 * t) + 
+             0.1 * (Random().nextDouble() - 0.5);
+    });
+    double resCaixa = dsp.processarAudio(caixaBuffer, sampleRate, 0, 190.0);
+    report.add('Caixa (190Hz): ${resCaixa.toStringAsFixed(2)} Hz ${(resCaixa - 190).abs() < 2 ? "✅" : "❌"}');
+
+    // Teste 2: Bumbo (65 Hz com ruído)
+    List<double> bumboBuffer = List.generate(length, (i) {
+      double t = i / sampleRate;
+      return 0.6 * sin(2 * pi * 65 * t) + 
+             0.3 * sin(2 * pi * 130 * t) + 
+             0.1 * (Random().nextDouble() - 0.5);
+    });
+    double resBumbo = dsp.processarAudio(bumboBuffer, sampleRate, 1, 65.0);
+    report.add('Bumbo (65Hz): ${resBumbo.toStringAsFixed(2)} Hz ${(resBumbo - 65).abs() < 2 ? "✅" : "❌"}');
+
+    // Teste 3: Tom 1 (160 Hz)
+    List<double> tomBuffer = List.generate(length, (i) {
+      double t = i / sampleRate;
+      return 0.7 * sin(2 * pi * 160 * t) + 0.1 * (Random().nextDouble() - 0.5);
+    });
+    double resTom = dsp.processarAudio(tomBuffer, sampleRate, 2, 160.0);
+    report.add('Tom 1 (160Hz): ${resTom.toStringAsFixed(2)} Hz ${(resTom - 160).abs() < 2 ? "✅" : "❌"}');
+
+    // Exibe o resultado
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text('🧪 Testes Internos DSP (C++)', style: TextStyle(color: Colors.white)),
+        content: Text(
+          report.join('\n\n'),
+          style: const TextStyle(color: Colors.white70, fontSize: 16),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Fechar'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _startListening() async {
     if (!await _recorder.hasPermission()) return;
     
@@ -219,11 +273,9 @@ class _DrumNoteTunerScreenState extends State<DrumNoteTunerScreen> {
       if (_selectedDrum == 'Tom 2') drumTypeInt = 3;
       if (_selectedDrum == 'Surdo') drumTypeInt = 4;
 
-      // Pega a referência (customizada ou do áudio)
       double targetHz = _customTargetHz ?? drumReferenceFreqs[_selectedDrum]!;
 
       final dsp = NativeDsp();
-      // ✅ CHAMADA ATUALIZADA COM O TARGET HZ PARA O FILTRO BIQUAD
       double f0 = dsp.processarAudio(buffer, 22050, drumTypeInt, targetHz);
       
       if (!mounted) return;
@@ -239,20 +291,18 @@ class _DrumNoteTunerScreenState extends State<DrumNoteTunerScreen> {
       final noteResult = NoteConverter.frequencyToNote(f0);
       String note = '${noteResult.note}${noteResult.octave}';
       
-      // Cálculo da diferença em Hz
       double diff = (f0 - targetHz).abs();
       
-      // Lógica de Cores por Proximidade
       Color color;
       String status;
       if (diff <= 2.0) {
-        color = Colors.greenAccent; // Muito perto (Afinado)
+        color = Colors.greenAccent; 
         status = 'AFINADO';
       } else if (diff <= 5.0) {
-        color = Colors.amberAccent; // Perto (Quase lá)
+        color = Colors.amberAccent; 
         status = 'QUASE LÁ';
       } else {
-        color = Colors.redAccent;   // Longe (Desafinado)
+        color = Colors.redAccent;   
         status = 'DESAFINADO';
       }
 
@@ -425,6 +475,14 @@ class _DrumNoteTunerScreenState extends State<DrumNoteTunerScreen> {
         centerTitle: true,
         backgroundColor: Colors.transparent,
         elevation: 0,
+        actions: [
+          // ✅ BOTÃO DE TESTES INTERNOS
+          IconButton(
+            icon: const Icon(Icons.bug_report, color: Colors.grey),
+            tooltip: 'Testes Internos DSP',
+            onPressed: _runInternalTests,
+          ),
+        ],
       ),
       body: SafeArea(
         child: Column(
@@ -469,7 +527,7 @@ class _DrumNoteTunerScreenState extends State<DrumNoteTunerScreen> {
                   style: TextStyle(
                     fontSize: 52, 
                     fontWeight: FontWeight.bold, 
-                    color: _currentF0 != null ? _statusColor : Colors.grey, // Frequência colorida
+                    color: _currentF0 != null ? _statusColor : Colors.grey, 
                   ),
                 ),
                 const SizedBox(height: 4),
