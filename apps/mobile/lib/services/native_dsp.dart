@@ -57,9 +57,7 @@ class NativeDsp {
   ) {
     final Pointer<Double> bufferPtr = calloc<Double>(audio.length);
     try {
-      for (int i = 0; i < audio.length; i++) {
-        bufferPtr[i] = audio[i];
-      }
+      bufferPtr.asTypedList(audio.length).setAll(0, audio);
       return _processAudio(bufferPtr, audio.length, sampleRate, drumType, targetHz);
     } finally {
       calloc.free(bufferPtr);
@@ -70,9 +68,7 @@ class NativeDsp {
   double processarString(List<double> audio, int sampleRate) {
     final Pointer<Double> bufferPtr = calloc<Double>(audio.length);
     try {
-      for (int i = 0; i < audio.length; i++) {
-        bufferPtr[i] = audio[i];
-      }
+      bufferPtr.asTypedList(audio.length).setAll(0, audio);
       return _processString(bufferPtr, audio.length, sampleRate);
     } finally {
       calloc.free(bufferPtr);
