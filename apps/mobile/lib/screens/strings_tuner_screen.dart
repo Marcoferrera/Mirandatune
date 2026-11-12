@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart'; // Import para o compute
 import 'package:record/record.dart';
 import 'package:dsp/dsp.dart';
 import '../services/log_service.dart';
+import '../services/native_dsp.dart';
 
 const Map<String, List<String>> instrumentPresets = {
   'Cromático': [],
@@ -20,11 +21,12 @@ const Map<String, List<String>> instrumentPresets = {
 Map<String, dynamic> _isolateDetectPitch(Map<String, dynamic> params) {
   final List<double> buffer = params['buffer'];
   final int sampleRate = params['sampleRate'];
-  final result = PitchDetector.detect(buffer, sampleRate);
+  final dsp = NativeDsp();
+  final double freq = dsp.processarString(buffer, sampleRate);
   return {
-    'isSilent': result.isSilent,
-    'frequency': result.frequency,
-    'confidence': result.confidence,
+    'isSilent': freq <= 0.0,
+    'frequency': freq,
+    'confidence': freq > 0.0 ? 1.0 : 0.0,
   };
 }
 
@@ -216,7 +218,6 @@ class _StringsTunerScreenState extends State<StringsTunerScreen> with WidgetsBin
   }
 
   void _openSettings() {
-    // ... (Mantém o modal de configurações como estava)
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,

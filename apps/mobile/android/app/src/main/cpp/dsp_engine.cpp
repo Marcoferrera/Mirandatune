@@ -98,3 +98,77 @@ extern "C" __attribute__((visibility("default"))) double processAudioBuffer(
 
     return refinedBin * binWidth;
 }
+
+extern "C" __attribute__((visibility("default"))) __attribute__((used))
+double processStringBuffer(const double* buffer, int length, int sampleRate) {
+    if (buffer == nullptr || length <= 0 || sampleRate <= 0) return 0.0;
+
+    // RMS para detectar silêncio
+    double sumSq = 0.0;
+    for (int i = 0; i < length; i++) sumSq += buffer[i] * buffer[i];
+    double rms = std::sqrt(sumSq / (double)length);
+    if (rms < 0.01) return 0.0;
+
+    // Limites dinâmicos de frequência
+    const double minFreq = 30.0;
+    const double maxFreq = 1700.0;
+    int tauMin = (int)std::floor((double)sampleRate / maxFreq);
+    int tauMax = (int)std::ceil((double)sampleRate / minFreq);
+    if (tauMin < 1) tauMin = 1;
+    if (tauMax >= length / 2) tauMax = length / 2 - 1;
+    if (tauMax <= tauMin) return 0.0;
+
+    const int windowSize = length - tauMax;
+    if (windowSize <= 0) return 0.0;
+
+    // (a) Função de Diferença
+    std::vector<double> diff(tauMax + 1, 0.0);
+    for (int tau = tauMin; tau <= tauMax; tau++) {
+        double sum = 0.0;
+        for (int j = 0; j < windowSize; j++) {
+            double d = buffer[j] - buffer[j + tau];
+            sum += d * d;
+        }
+        diff[tau] = sum;
+    }
+
+    // (b) CMNDF
+    std::vector<double> cmndf(tauMax + 1, 0.0);
+    cmndf[0] = 1.0;
+    double running = 0.0;
+    for (int tau = 1; tau <= tauMax; tau++) {
+        running += diff[tau];
+        if (running <= 0.0) {
+            cmndf[tau] = 1.0;
+        } else {
+            cmndf[tau] = diff[tau] * (double)tau / running;
+        }
+    }
+
+    // (c) Limiar absoluto: primeiro mínimo local abaixo de 0.15
+    const double threshold = 0.15;
+    int tauEstimate = -1;
+    for (int tau = tauMin; tau <= tauMax; tau++) {
+        if (cmndf[tau] < threshold) {
+            while (tau + 1 <= tauMax && cmndf[tau + 1] < cmndf[tau]) tau++;
+            tauEstimate = tau;
+            break;
+        }
+    }
+    if (tauEstimate < 0) return 0.0;
+
+    // (d) Interpolação parabólica
+    double betterTau = (double)tauEstimate;
+    if (tauEstimate > 0 && tauEstimate < tauMax) {
+        double x0 = cmndf[tauEstimate - 1];
+        double x1 = cmndf[tauEstimate];
+        double x2 = cmndf[tauEstimate + 1];
+        double denom = 2.0 * (2.0 * x1 - x2 - x0);
+        if (denom != 0.0) {
+            betterTau = (double)tauEstimate + (x2 - x0) / denom;
+        }
+    }
+    if (betterTau <= 0.0) return 0.0;
+
+    return (double)sampleRate / betterTau;
+}
