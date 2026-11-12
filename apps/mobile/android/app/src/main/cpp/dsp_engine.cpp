@@ -38,6 +38,7 @@ extern "C" __attribute__((visibility("default"))) double processAudioBuffer(
 ) {
     if (length < 2048) return 0.0;
 
+    // 1. Achar o Onset (janela de 256 amostras para precisão)
     int onsetIndex = 0;
     double maxRms = 0.0;
     int hopSize = 256;
@@ -49,8 +50,9 @@ extern "C" __attribute__((visibility("default"))) double processAudioBuffer(
     }
     if (maxRms < 0.01) return 0.0;
 
+    // 2. Pular o estalo inicial e pegar exatamente 2048 amostras (com zero-padding)
     int fftSize = 2048;
-    int startIndex = onsetIndex + 128;
+    int startIndex = onsetIndex + 128; // Pula o transiente de 128 amostras (aprox 6ms)
 
     std::vector<std::complex<double>> fftData(fftSize);
     for (int i = 0; i < fftSize; i++) {
@@ -62,8 +64,10 @@ extern "C" __attribute__((visibility("default"))) double processAudioBuffer(
         fftData[i] = std::complex<double>(val * hann, 0.0);
     }
 
+    // 3. FFT
     fft(fftData);
 
+    // 4. Faixa de busca fixa (Independente do alvo)
     double minFreq = 40.0, maxFreq = 300.0;
     if (drumType == 0) { minFreq = 140.0; maxFreq = 260.0; }
     if (drumType == 1) { minFreq = 40.0;  maxFreq = 110.0; }
@@ -82,6 +86,7 @@ extern "C" __attribute__((visibility("default"))) double processAudioBuffer(
         if (m > maxMag) { maxMag = m; peakBin = i; }
     }
 
+    // 5. Interpolação Parabólica
     double refinedBin = peakBin;
     if (peakBin > 0 && peakBin < fftSize / 2 - 1) {
         double alpha = std::abs(fftData[peakBin - 1]);
@@ -98,21 +103,25 @@ extern "C" __attribute__((visibility("default"))) __attribute__((used))
 double processStringBuffer(const double* buffer, int length, int sampleRate) {
     if (buffer == nullptr || length <= 0 || sampleRate <= 0) return 0.0;
 
+    // RMS para detectar silêncio
     double sumSq = 0.0;
     for (int i = 0; i < length; i++) sumSq += buffer[i] * buffer[i];
     double rms = std::sqrt(sumSq / (double)length);
     if (rms < 0.01) return 0.0;
 
+    // Limites dinâmicos de frequência
     const double minFreq = 30.0;
     const double maxFreq = 1700.0;
     int tauMin = (int)std::floor((double)sampleRate / maxFreq);
     int tauMax = (int)std::ceil((double)sampleRate / minFreq);
     if (tauMin < 1) tauMin = 1;
+    if (tauMax >= length / 2) tauMax = length / 2 - 1;
     if (tauMax <= tauMin) return 0.0;
-    if (length < tauMax + 1) return 0.0;
 
     const int windowSize = length - tauMax;
+    if (windowSize <= 0) return 0.0;
 
+    // (a) Função de Diferença
     std::vector<double> diff(tauMax + 1, 0.0);
     for (int tau = tauMin; tau <= tauMax; tau++) {
         double sum = 0.0;
@@ -123,6 +132,7 @@ double processStringBuffer(const double* buffer, int length, int sampleRate) {
         diff[tau] = sum;
     }
 
+    // (b) CMNDF
     std::vector<double> cmndf(tauMax + 1, 0.0);
     cmndf[0] = 1.0;
     double running = 0.0;
@@ -135,6 +145,7 @@ double processStringBuffer(const double* buffer, int length, int sampleRate) {
         }
     }
 
+    // (c) Limiar absoluto: primeiro mínimo local abaixo de 0.15
     const double threshold = 0.15;
     int tauEstimate = -1;
     for (int tau = tauMin; tau <= tauMax; tau++) {
@@ -146,6 +157,7 @@ double processStringBuffer(const double* buffer, int length, int sampleRate) {
     }
     if (tauEstimate < 0) return 0.0;
 
+    // (d) Interpolação parabólica
     double betterTau = (double)tauEstimate;
     if (tauEstimate > 0 && tauEstimate < tauMax) {
         double x0 = cmndf[tauEstimate - 1];

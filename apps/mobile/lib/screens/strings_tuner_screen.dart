@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/foundation.dart'; // Import para o compute
 import 'package:record/record.dart';
 import 'package:dsp/dsp.dart';
 import '../services/log_service.dart';
@@ -17,27 +17,16 @@ const Map<String, List<String>> instrumentPresets = {
   'Violino': ['G3', 'D4', 'A4', 'E5'],
 };
 
+// ✅ A FUNÇÃO ISOLATE É OBRIGATÓRIA PARA NÃO TRAVAR A TELA
 Map<String, dynamic> _isolateDetectPitch(Map<String, dynamic> params) {
   final List<double> buffer = params['buffer'];
   final int sampleRate = params['sampleRate'];
   final dsp = NativeDsp();
   final double freq = dsp.processarString(buffer, sampleRate);
-  final bool isSilent = freq <= 0.0;
-
-  if (kDebugMode) {
-    double sumSq = 0.0;
-    for (final v in buffer) sumSq += v * v;
-    final double rms = sqrt(sumSq / buffer.length);
-    debugPrint('MIRANDA,${DateTime.now().millisecondsSinceEpoch},'
-        '${freq.toStringAsFixed(3)},'
-        '${rms.toStringAsFixed(6)},'
-        '$isSilent');
-  }
-
   return {
-    'isSilent': isSilent,
+    'isSilent': freq <= 0.0,
     'frequency': freq,
-    'confidence': isSilent ? 0.0 : 1.0,
+    'confidence': freq > 0.0 ? 1.0 : 0.0,
   };
 }
 
@@ -128,21 +117,24 @@ class _StringsTunerScreenState extends State<StringsTunerScreen> with WidgetsBin
         _audioAccumulator.add(sampleInt / 32768.0);
       }
 
+      // Se o buffer acumulou muito, processa
       if (_audioAccumulator.length >= 4096 && !_isProcessing) {
         double sumSquares = 0;
         for (double v in _audioAccumulator) sumSquares += v * v;
         final rms = sqrt(sumSquares / _audioAccumulator.length);
 
+        // Se o som for alto o suficiente, processa
         if (rms > 0.05 && DateTime.now().difference(_lastHitTime).inMilliseconds > 800) {
           _lastHitTime = DateTime.now();
           
           final bufferToProcess = List<double>.from(_audioAccumulator);
-          _audioAccumulator.clear();
+          _audioAccumulator.clear(); // Limpa imediatamente após tirar a cópia
           
           _processHit(bufferToProcess);
         } else if (rms < 0.02) {
           _audioAccumulator.clear();
         } else {
+          // Se estiver no meio do som, remove metade para não acumular infinitamente
           _audioAccumulator.removeRange(0, 2048);
         }
       }
@@ -153,6 +145,7 @@ class _StringsTunerScreenState extends State<StringsTunerScreen> with WidgetsBin
     _isProcessing = true;
 
     try {
+      // ✅ USA COMPUTE PARA NÃO TRAVAR A TELA
       final resultMap = await compute(_isolateDetectPitch, {
         'buffer': buffer,
         'sampleRate': 22050,
@@ -205,7 +198,7 @@ class _StringsTunerScreenState extends State<StringsTunerScreen> with WidgetsBin
     } catch (e) {
       LogService.addEvent('AUDIO_PROCESS_ERROR', {'error': e.toString()});
     } finally {
-      _isProcessing = false;
+      _isProcessing = false; // ✅ Garante que destrava sempre
     }
   }
 
