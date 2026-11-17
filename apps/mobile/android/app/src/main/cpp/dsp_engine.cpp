@@ -1,4 +1,3 @@
-#include <jni.h>
 #include <string>
 #include <vector>
 #include <cmath>
@@ -36,7 +35,7 @@ extern "C" __attribute__((visibility("default"))) double processAudioBuffer(
     int drumType,
     double targetHz
 ) {
-    if (length < 2048) return 0.0;
+    if (buffer == nullptr || length < 2048 || sampleRate <= 0) return 0.0;
 
     // 1. Achar o Onset (janela de 256 amostras para precisão)
     int onsetIndex = 0;
@@ -52,7 +51,7 @@ extern "C" __attribute__((visibility("default"))) double processAudioBuffer(
 
     // 2. Pular o estalo inicial e pegar exatamente 2048 amostras (com zero-padding)
     int fftSize = 2048;
-    int startIndex = onsetIndex + 128; // Pula o transiente de 128 amostras (aprox 6ms)
+    int startIndex = std::min(onsetIndex + 128, length - fftSize); // Pula o transiente de 128 amostras (aprox 6ms)
 
     std::vector<std::complex<double>> fftData(fftSize);
     for (int i = 0; i < fftSize; i++) {
@@ -75,9 +74,16 @@ extern "C" __attribute__((visibility("default"))) double processAudioBuffer(
     if (drumType == 3) { minFreq = 90.0;  maxFreq = 180.0; }
     if (drumType == 4) { minFreq = 55.0;  maxFreq = 145.0; }
 
+    // O alvo personalizável só restringe a busca dentro da faixa física da peça.
+    if (std::isfinite(targetHz) && targetHz > 0.0) {
+        minFreq = std::max(minFreq, targetHz * 0.80);
+        maxFreq = std::min(maxFreq, targetHz * 1.20);
+        if (minFreq >= maxFreq) return 0.0;
+    }
     double binWidth = (double)sampleRate / fftSize;
-    int minBin = (int)(minFreq / binWidth);
-    int maxBin = (int)(maxFreq / binWidth);
+    int minBin = std::max(1, (int)std::ceil(minFreq / binWidth));
+    int maxBin = (int)std::floor(maxFreq / binWidth);
+    if (minBin > maxBin) return 0.0;
 
     double maxMag = 0.0;
     int peakBin = minBin;
@@ -86,6 +92,7 @@ extern "C" __attribute__((visibility("default"))) double processAudioBuffer(
         if (m > maxMag) { maxMag = m; peakBin = i; }
     }
 
+    if (maxMag <= 1e-8) return 0.0;
     // 5. Interpolação Parabólica
     double refinedBin = peakBin;
     if (peakBin > 0 && peakBin < fftSize / 2 - 1) {
@@ -96,7 +103,8 @@ extern "C" __attribute__((visibility("default"))) double processAudioBuffer(
         if (denominator != 0) refinedBin = peakBin + (gamma - alpha) / denominator;
     }
 
-    return refinedBin * binWidth;
+    const double frequency = refinedBin * binWidth;
+    return (frequency >= minFreq && frequency <= maxFreq) ? frequency : 0.0;
 }
 
 extern "C" __attribute__((visibility("default"))) __attribute__((used))

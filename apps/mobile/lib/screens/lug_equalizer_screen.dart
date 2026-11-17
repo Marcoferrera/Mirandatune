@@ -73,7 +73,10 @@ class _LugEqualizerScreenState extends State<LugEqualizerScreen> {
   }
 
   Future<void> _startListening() async {
-    if (!await _recorder.hasPermission()) return;
+    if (!await _recorder.hasPermission()) {
+      if (mounted) setState(() => _validationMessage = 'Permita o acesso ao microfone');
+      return;
+    }
 
     setState(() {
       _isListening = true;
@@ -96,7 +99,7 @@ class _LugEqualizerScreenState extends State<LugEqualizerScreen> {
     _sub = stream.listen((data) {
       if (!_isListening) return;
       
-      for (int i = 0; i < data.length; i += 2) {
+      for (int i = 0; i + 1 < data.length; i += 2) {
         int low = data[i];
         int high = data[i + 1];
         int sampleInt = (high << 8) | low;
@@ -247,6 +250,7 @@ class _LugEqualizerScreenState extends State<LugEqualizerScreen> {
   @override
   void dispose() {
     _sub?.cancel();
+    _recorder.stop();
     _recorder.dispose();
     super.dispose();
   }
@@ -256,7 +260,9 @@ class _LugEqualizerScreenState extends State<LugEqualizerScreen> {
     bool jaMedido = _parafusoFrequencies.containsKey(_currentParafuso);
     double deltaAtual = _getDeltaCents(_currentParafuso).abs();
     bool isAfinado = jaMedido && _currentParafuso != 1 && deltaAtual <= 5.0;
-    bool isFinished = _parafusoFrequencies.length == _numParafusos;
+    bool isFinished = _parafusoFrequencies.length == _numParafusos &&
+        _referenceFreq != null &&
+        _parafusoFrequencies.keys.every((p) => _getDeltaCents(p).abs() <= 5.0);
 
     String buttonText;
     Color buttonColor;

@@ -1,12 +1,9 @@
 import 'dart:async';
-import 'dart:io';
-import 'dart:typed_data';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:record/record.dart';
 import 'package:audioplayers/audioplayers.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:dsp/dsp.dart'; 
 import '../services/log_service.dart';
 import '../services/native_dsp.dart'; 
@@ -115,7 +112,6 @@ class _DrumNoteTunerScreenState extends State<DrumNoteTunerScreen> {
   Color _statusColor = Colors.grey;
   
   DateTime _lastHitTime = DateTime.now();
-  int _wavCounter = 0;
 
   @override
   void initState() {
@@ -144,53 +140,11 @@ class _DrumNoteTunerScreenState extends State<DrumNoteTunerScreen> {
     _startListening();
   }
 
-  Future<void> _saveWav(List<double> buffer) async {
-    try {
-      final dir = await getApplicationDocumentsDirectory();
-      final wavDir = Directory('${dir.path}/mirandatune_debug');
-      if (!await wavDir.exists()) await wavDir.create();
-      
-      _wavCounter++;
-      final file = File('${wavDir.path}/hit_${_wavCounter.toString().padLeft(3, '0')}.wav');
-      
-      const int sampleRate = 22050;
-      final int numSamples = buffer.length;
-      final int dataSize = numSamples * 2;
-      
-      final header = ByteData(44);
-      header.setUint8(0, 0x52); header.setUint8(1, 0x49); header.setUint8(2, 0x46); header.setUint8(3, 0x46);
-      header.setUint32(4, 36 + dataSize, Endian.little);
-      header.setUint8(8, 0x57); header.setUint8(9, 0x41); header.setUint8(10, 0x56); header.setUint8(11, 0x45);
-      header.setUint8(12, 0x66); header.setUint8(13, 0x6D); header.setUint8(14, 0x74); header.setUint8(15, 0x20);
-      header.setUint32(16, 16, Endian.little);
-      header.setUint16(20, 1, Endian.little);
-      header.setUint16(22, 1, Endian.little);
-      header.setUint32(24, sampleRate, Endian.little);
-      header.setUint32(28, sampleRate * 2, Endian.little);
-      header.setUint16(32, 2, Endian.little);
-      header.setUint16(34, 16, Endian.little);
-      header.setUint8(36, 0x64); header.setUint8(37, 0x61); header.setUint8(38, 0x74); header.setUint8(39, 0x61);
-      header.setUint32(40, dataSize, Endian.little);
-      
-      final pcmData = ByteData(dataSize);
-      for (int i = 0; i < numSamples; i++) {
-        final val = (buffer[i] * 32767).clamp(-32768, 32767).toInt();
-        pcmData.setInt16(i * 2, val, Endian.little);
-      }
-      
-      final bytes = Uint8List(44 + dataSize);
-      bytes.setRange(0, 44, header.buffer.asUint8List());
-      bytes.setRange(44, 44 + dataSize, pcmData.buffer.asUint8List());
-      
-      await file.writeAsBytes(bytes);
-      debugPrint('MIRANDA_WAV,${file.path}');
-    } catch (e) {
-      debugPrint('MIRANDA_WAV_ERR,$e');
-    }
-  }
-
   Future<void> _startListening() async {
-    if (!await _recorder.hasPermission()) return;
+    if (!await _recorder.hasPermission()) {
+      if (mounted) setState(() => _status = 'Permita o acesso ao microfone');
+      return;
+    }
     
     setState(() {
       _isListening = true;
@@ -216,7 +170,7 @@ class _DrumNoteTunerScreenState extends State<DrumNoteTunerScreen> {
     _sub = stream.listen((data) {
       if (!_isListening || _isProcessing || _isPlayingAudio) return;
 
-      for (int i = 0; i < data.length; i += 2) {
+      for (int i = 0; i + 1 < data.length; i += 2) {
         int low = data[i];
         int high = data[i + 1];
         int sampleInt = (high << 8) | low;
@@ -237,9 +191,6 @@ class _DrumNoteTunerScreenState extends State<DrumNoteTunerScreen> {
           final bufferToProcess = List<double>.from(_audioAccumulator);
           _audioAccumulator.clear(); 
           
-          if (kDebugMode) {
-            _saveWav(bufferToProcess);
-          }
           
           _processHit(bufferToProcess);
         } else if (rms < 0.01) {

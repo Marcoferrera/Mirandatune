@@ -46,6 +46,7 @@ class _StringsTunerScreenState extends State<StringsTunerScreen> with WidgetsBin
 
   bool _isListening = false;
   bool _isProcessing = false;
+  Timer? _staleTimer;
   List<double> _audioAccumulator = [];
 
   final List<double> _freqHistory = [];
@@ -67,6 +68,7 @@ class _StringsTunerScreenState extends State<StringsTunerScreen> with WidgetsBin
 
   @override
   void dispose() {
+    _staleTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _stopListening();
     _recorder.dispose();
@@ -83,7 +85,10 @@ class _StringsTunerScreenState extends State<StringsTunerScreen> with WidgetsBin
   }
 
   Future<void> _startListening() async {
-    if (!await _recorder.hasPermission()) return;
+    if (!await _recorder.hasPermission()) {
+      if (mounted) setState(() => _displayNote = 'Sem microfone');
+      return;
+    }
     
     setState(() {
       _isListening = true;
@@ -109,7 +114,7 @@ class _StringsTunerScreenState extends State<StringsTunerScreen> with WidgetsBin
     _sub = stream.listen((data) {
       if (!_isListening) return;
 
-      for (int i = 0; i < data.length; i += 2) {
+      for (int i = 0; i + 1 < data.length; i += 2) {
         int low = data[i];
         int high = data[i + 1];
         int sampleInt = (high << 8) | low;
@@ -124,7 +129,7 @@ class _StringsTunerScreenState extends State<StringsTunerScreen> with WidgetsBin
         final rms = sqrt(sumSquares / _audioAccumulator.length);
 
         // Se o som for alto o suficiente, processa
-        if (rms > 0.05 && DateTime.now().difference(_lastHitTime).inMilliseconds > 800) {
+        if (rms > 0.02 && DateTime.now().difference(_lastHitTime).inMilliseconds > 80) {
           _lastHitTime = DateTime.now();
           
           final bufferToProcess = List<double>.from(_audioAccumulator);
@@ -174,7 +179,26 @@ class _StringsTunerScreenState extends State<StringsTunerScreen> with WidgetsBin
       
       String fullNote = '$finalNote$finalOctave';
       double cents = noteResult.cents;
+      final preset = instrumentPresets[_currentPreset]!;
+      if (preset.isNotEmpty) {
+        const names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+        int? nearestMidi;
+        String? nearestName;
+        final heardMidi = 69 + 12 * log(frequency / _referenceA4) / ln2 - _capotraste;
+        for (final name in preset) {
+          final match = RegExp(r'^([A-G]#?)(\d+)$').firstMatch(name)!;
+          final midi = (int.parse(match.group(2)!) + 1) * 12 + names.indexOf(match.group(1)!);
+          if (nearestMidi == null || (midi - heardMidi).abs() < (nearestMidi - heardMidi).abs()) {
+            nearestMidi = midi;
+            nearestName = name;
+          }
+        }
+        fullNote = nearestName!;
+        final targetHz = _referenceA4 * pow(2, (nearestMidi! + _capotraste - 69) / 12);
+        cents = 1200 * log(frequency / targetHz) / ln2;
+      }
 
+      if (_displayNote != fullNote) { _freqHistory.clear(); _centsHistory.clear(); _isInTune = false; }
       _freqHistory.add(frequency);
       _centsHistory.add(cents);
       if (_freqHistory.length > 3) {
@@ -188,6 +212,10 @@ class _StringsTunerScreenState extends State<StringsTunerScreen> with WidgetsBin
       bool inTune = _isInTune ? avgCents.abs() <= 15.0 : avgCents.abs() <= 5.0;
 
       if (mounted) {
+        _staleTimer?.cancel();
+        _staleTimer = Timer(const Duration(milliseconds: 1200), () {
+          if (mounted) setState(() { _currentFreq = null; _displayNote = '--'; _isInTune = false; _freqHistory.clear(); _centsHistory.clear(); });
+        });
         setState(() {
           _currentFreq = avgFreq;
           _displayNote = fullNote;
@@ -203,6 +231,7 @@ class _StringsTunerScreenState extends State<StringsTunerScreen> with WidgetsBin
   }
 
   Future<void> _stopListening() async {
+    _staleTimer?.cancel();
     await _sub?.cancel();
     await _recorder.stop();
     if (mounted) {
@@ -314,7 +343,7 @@ class _StringsTunerScreenState extends State<StringsTunerScreen> with WidgetsBin
                   style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
                   items: instrumentPresets.keys.map((String value) => DropdownMenuItem<String>(value: value, child: Text(value))).toList(),
                   onChanged: (newValue) {
-                    setState(() { _currentPreset = newValue!; });
+                    setState(() { _currentPreset = newValue!; _currentFreq = null; _displayNote = '--'; _isInTune = false; _freqHistory.clear(); _centsHistory.clear(); });
                     LogService.addEvent('STRING_PRESET_CHANGED', {'preset': _currentPreset});
                   },
                 ),
